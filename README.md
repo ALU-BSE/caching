@@ -27,8 +27,7 @@ By the end of this guide, you'll have hands-on experience implementing different
 9. [Caching in Flask Applications](#caching-in-flask-applications)
 10. [Caching in Django Applications](#caching-in-django-applications)
 11. [Monitoring and Optimizing Your Cache](#monitoring-and-optimizing-your-cache)
-12. [Final Challenge: Building a Cached API](#final-challenge-building-a-cached-api)
-13. [Additional Resources](#additional-resources)
+12. [Additional Resources](#additional-resources)
 
 ## Understanding Caching Fundamentals
 
