@@ -1537,65 +1537,137 @@ def weather_demo():
 </html>
 ```
 
+Here's a comprehensive addition to your guided learning activity focused on implementing caching in Django, designed specifically for learners who might be new to Django. This section will walk through creating a Django project from scratch and then implementing various caching strategies step by step.
+
+---
+
 ## Caching in Django Applications
 
-### Django's Cache Framework
+### Setting Up a Django Project
 
-Django provides a robust caching framework with multiple backends:
+**Note**: If learners already have a Django project set up, they can skip to the caching implementation section.
 
-1. Configure caching in `settings.py`:
+#### Step 1: Install Django
+```bash
+pip install django
+```
 
+#### Step 2: Create a New Django Project
+```bash
+django-admin startproject caching_demo
+cd caching_demo
+```
+
+#### Step 3: Create a Products App
+```bash
+python manage.py startapp products
+```
+
+#### Step 4: Configure the Project
+
+1. Add 'products' to `INSTALLED_APPS` in `caching_demo/settings.py`:
 ```python
-CACHES = {
+INSTALLED_APPS = [
+    ...,
+    'products',
+]
+```
+
+2. Set up the database in `settings.py`:
+```python
+DATABASES = {
     'default': {
-        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
-        'LOCATION': 'redis://localhost:6379/0',
-        'OPTIONS': {
-            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
-        }
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
 ```
 
-2. Per-view caching:
-
+3. Configure templates directory in `settings.py`:
 ```python
-from django.views.decorators.cache import cache_page
-
-@cache_page(60 * 15)  # Cache for 15 minutes
-def my_view(request):
-    # Your view logic
+TEMPLATES = [
+    {
+        ...
+        'DIRS': [BASE_DIR / 'templates'],
+        ...
+    },
+]
 ```
 
-3. Template fragment caching:
+#### Step 5: Create Product Model
 
-```html
-{% load cache %}
-{% cache 500 sidebar %}
-    <!-- Sidebar content -->
-{% endcache %}
+In `products/models.py`:
+```python
+from django.db import models
+
+class Product(models.Model):
+    name = models.CharField(max_length=100)
+    description = models.TextField()
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return self.name
 ```
 
-4. Low-level cache API:
-
-```python
-from django.core.cache import cache
-
-# Set cache
-cache.set('my_key', 'my_value', timeout=3600)
-
-# Get cache
-value = cache.get('my_key')
+#### Step 6: Make and Apply Migrations
+```bash
+python manage.py makemigrations
+python manage.py migrate
 ```
 
-### Exercise 10: Implementing Caching in Django
+#### Step 7: Create Superuser
+```bash
+python manage.py createsuperuser
+```
 
-**Objective**: Create a cached Django view for product listings.
+#### Step 8: Register Model in Admin
 
-1. Create a Django view with caching:
-
+In `products/admin.py`:
 ```python
-# products/views.py
+from django.contrib import admin
+from .models import Product
+
+admin.site.register(Product)
+```
+
+#### Step 9: Add Sample Data
+
+1. Run the development server:
+```bash
+python manage.py runserver
+```
+
+2. Visit http://localhost:8000/admin and add some sample products.
+
+### Implementing Caching in Django
+
+#### Step 1: Configure Cache Backend
+
+In `settings.py`, add Redis cache configuration:
+```python
+CACHES = {
+    'default': {
+        'BACKEND': 'django_redis.cache.RedisCache',
+        'LOCATION': 'redis://localhost:6379/1',
+        'OPTIONS': {
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+        },
+        'KEY_PREFIX': 'django_cache',
+    }
+}
+```
+
+Install required package:
+```bash
+pip install django-redis
+```
+
+#### Step 2: View-Level Caching
+
+In `products/views.py`:
+```python
 from django.shortcuts import render
 from django.views.decorators.cache import cache_page
 from .models import Product
@@ -1604,23 +1676,22 @@ import time
 @cache_page(60 * 5)  # Cache for 5 minutes
 def product_list(request):
     start_time = time.time()
+    products = Product.objects.all().order_by('name')
     
-    # Simulate complex queryset
-    products = list(Product.objects.all().order_by('name')[:100])
+    # Simulate complex processing
+    time.sleep(2)
     
     context = {
         'products': products,
         'execution_time': time.time() - start_time,
-        'source': 'cache' if getattr(request, '_cache_update_cache', False) else 'database'
     }
-    
     return render(request, 'products/list.html', context)
 ```
 
-2. Create a template to display the results:
+#### Step 3: Create Template
 
+Create `templates/products/list.html`:
 ```html
-<!-- templates/products/list.html -->
 <!DOCTYPE html>
 <html>
 <head>
@@ -1628,20 +1699,22 @@ def product_list(request):
 </head>
 <body>
     <h1>Product List</h1>
-    <p>Generated in {{ execution_time|floatformat:4 }} seconds (Source: {{ source }})</p>
+    <p>Generated in {{ execution_time }} seconds</p>
     
     <table>
         <thead>
             <tr>
                 <th>Name</th>
                 <th>Price</th>
+                <th>Description</th>
             </tr>
         </thead>
         <tbody>
             {% for product in products %}
             <tr>
                 <td>{{ product.name }}</td>
-                <td>${{ product.price|floatformat:2 }}</td>
+                <td>${{ product.price }}</td>
+                <td>{{ product.description|truncatewords:10 }}</td>
             </tr>
             {% endfor %}
         </tbody>
@@ -1652,152 +1725,318 @@ def product_list(request):
 </html>
 ```
 
-3. Implement cache invalidation on product save:
+#### Step 4: Add URL Pattern
 
+In `caching_demo/urls.py`:
 ```python
-# products/models.py
-from django.db import models
-from django.core.cache import cache
-from django.db.models.signals import post_save
-from django.dispatch import receiver
+from django.contrib import admin
+from django.urls import path
+from products.views import product_list
 
-class Product(models.Model):
-    name = models.CharField(max_length=100)
-    price = models.DecimalField(max_digits=10, decimal_places=2)
-    description = models.TextField(blank=True)
-    
-    def __str__(self):
-        return self.name
-
-@receiver(post_save, sender=Product)
-def clear_product_cache(sender, instance, **kwargs):
-    """Clear cache when a product is saved"""
-    cache.delete_pattern('*.views.product_list*')  # Requires django-redis
+urlpatterns = [
+    path('admin/', admin.site.urls),
+    path('products/', product_list, name='product_list'),
+]
 ```
 
-## Monitoring and Optimizing Your Cache
+#### Step 5: Test the View
 
-### Key Metrics to Monitor
+1. Visit http://localhost:8000/products/
+2. Note the loading time on first visit
+3. Refresh and note the faster loading time (cached)
+4. Add `?refresh=1` to bypass cache
 
-1. **Cache Hit Rate**: Percentage of requests served from cache
-2. **Memory Usage**: How much of your cache storage is being used
-3. **Eviction Rate**: How often items are being removed due to space constraints
-4. **Latency**: Time taken for cache operations
-5. **Error Rate**: Failed cache operations
+### Template Fragment Caching
 
-### Redis Monitoring Commands
-
-```bash
-# Check Redis memory usage
-redis-cli info memory
-
-# Get cache statistics
-redis-cli info stats
-
-# Monitor Redis commands in real-time
-redis-cli monitor
-
-# Check keyspace information
-redis-cli info keyspace
-```
-
-### Exercise 11: Analyzing Cache Performance
-
-**Objective**: Create a dashboard to monitor cache performance.
-
-1. Create a monitoring route in `app/app.py`:
-
-```python
-@app.route('/cache-stats')
-def cache_stats():
-    redis_info = redis_client.info()
-    
-    stats = {
-        'memory': {
-            'used': redis_info['used_memory_human'],
-            'peak': redis_info['used_memory_peak_human'],
-            'fragmentation': redis_info['mem_fragmentation_ratio']
-        },
-        'keys': {
-            'total': redis_info['db0']['keys'] if 'db0' in redis_info else 0,
-            'expires': redis_info['db0']['expires'] if 'db0' in redis_info else 0
-        },
-        'hit_rate': {
-            'hits': redis_info['keyspace_hits'],
-            'misses': redis_info['keyspace_misses'],
-            'rate': redis_info['keyspace_hits'] / (redis_info['keyspace_hits'] + redis_info['keyspace_misses']) 
-                     if (redis_info['keyspace_hits'] + redis_info['keyspace_misses']) > 0 else 0
-        },
-        'throughput': {
-            'ops_per_sec': redis_info['instantaneous_ops_per_sec']
-        }
-    }
-    
-    return render_template('cache_stats.html', stats=stats)
-```
-
-2. Create a monitoring template:
-
+Modify `templates/products/list.html`:
 ```html
-<!-- app/templates/cache_stats.html -->
+{% load cache %}
+
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Cache Statistics</title>
-    <style>
-        .stat-card { border: 1px solid #ddd; padding: 15px; margin: 10px; border-radius: 5px; }
-        .stat-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
-        .good { color: green; }
-        .warning { color: orange; }
-        .bad { color: red; }
-    </style>
+    <title>Product List</title>
 </head>
 <body>
-    <h1>Cache Statistics</h1>
+    <h1>Product List</h1>
+    <p>Generated in {{ execution_time }} seconds</p>
     
-    <div class="stat-grid">
-        <div class="stat-card">
-            <h2>Memory Usage</h2>
-            <p>Used: {{ stats.memory.used }}</p>
-            <p>Peak: {{ stats.memory.peak }}</p>
-            <p>Fragmentation: 
-                <span class="{% if stats.memory.fragmentation < 1.1 %}good{% elif stats.memory.fragmentation < 1.5 %}warning{% else %}bad{% endif %}">
-                    {{ "%.2f"|format(stats.memory.fragmentation) }}
-                </span>
-            </p>
-        </div>
-        
-        <div class="stat-card">
-            <h2>Keys</h2>
-            <p>Total: {{ stats.keys.total }}</p>
-            <p>With TTL: {{ stats.keys.expires }}</p>
-        </div>
-        
-        <div class="stat-card">
-            <h2>Hit Rate</h2>
-            <p>Hits: {{ stats.hit_rate.hits }}</p>
-            <p>Misses: {{ stats.hit_rate.misses }}</p>
-            <p>Rate: 
-                <span class="{% if stats.hit_rate.rate > 0.8 %}good{% elif stats.hit_rate.rate > 0.5 %}warning{% else %}bad{% endif %}">
-                    {{ "%.2f%%"|format(stats.hit_rate.rate * 100) }}
-                </span>
-            </p>
-        </div>
-        
-        <div class="stat-card">
-            <h2>Throughput</h2>
-            <p>Operations/sec: {{ stats.throughput.ops_per_sec }}</p>
-        </div>
-    </div>
+    {% cache 300 product_table %}  <!-- Cache for 5 minutes -->
+    <table>
+        <!-- table content same as before -->
+    </table>
+    {% endcache %}
     
-    <p><a href="/">Back to Home</a></p>
-    
-    <script>
-        // Auto-refresh every 5 seconds
-        setTimeout(() => { window.location.reload(); }, 5000);
-    </script>
+    <p><a href="?refresh=1">Force Refresh</a></p>
 </body>
 </html>
+```
+
+### Low-Level Cache API
+
+#### Step 1: Create a Cached View
+
+In `products/views.py`:
+```python
+from django.core.cache import cache
+
+def product_detail(request, pk):
+    cache_key = f'product_{pk}'
+    product = cache.get(cache_key)
+    
+    if product is None:
+        # Simulate slow database query
+        time.sleep(2)
+        product = Product.objects.get(pk=pk)
+        # Cache for 15 minutes
+        cache.set(cache_key, product, 60 * 15)
+        cache_hit = False
+    else:
+        cache_hit = True
+    
+    context = {
+        'product': product,
+        'cache_hit': cache_hit,
+    }
+    return render(request, 'products/detail.html', context)
+```
+
+#### Step 2: Create Detail Template
+
+Create `templates/products/detail.html`:
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ product.name }}</title>
+</head>
+<body>
+    <h1>{{ product.name }}</h1>
+    <p>Cache: {% if cache_hit %}HIT{% else %}MISS{% endif %}</p>
+    
+    <p><strong>Price:</strong> ${{ product.price }}</p>
+    <p><strong>Description:</strong> {{ product.description }}</p>
+    
+    <p><a href="/products/">Back to list</a></p>
+</body>
+</html>
+```
+
+#### Step 3: Add URL Pattern
+
+In `urls.py`:
+```python
+path('products/<int:pk>/', product_detail, name='product_detail'),
+```
+
+### Cache Invalidation
+
+#### Method 1: Using Signals
+
+In `products/models.py`:
+```python
+from django.db.models.signals import post_save, post_delete
+from django.dispatch import receiver
+from django.core.cache import cache
+
+@receiver(post_save, sender=Product)
+@receiver(post_delete, sender=Product)
+def invalidate_product_cache(sender, instance, **kwargs):
+    cache.delete(f'product_{instance.pk}')
+    # Also invalidate list view cache
+    cache.delete_pattern('*.views.product_list*')  # Requires django-redis
+```
+
+#### Method 2: Manual Invalidation
+
+In `products/views.py`:
+```python
+from django.http import HttpResponseRedirect
+
+def update_product(request, pk):
+    product = Product.objects.get(pk=pk)
+    if request.method == 'POST':
+        product.name = request.POST.get('name')
+        product.price = request.POST.get('price')
+        product.description = request.POST.get('description')
+        product.save()
+        
+        # Manually invalidate cache
+        cache.delete(f'product_{pk}')
+        return HttpResponseRedirect(f'/products/{pk}/')
+    
+    return render(request, 'products/update.html', {'product': product})
+```
+
+### Exercise 10: Implementing a Cached API
+
+**Objective**: Create a DRF API endpoint with caching.
+
+#### Step 1: Install DRF
+```bash
+pip install djangorestframework
+```
+
+Add to `INSTALLED_APPS`:
+```python
+'rest_framework',
+```
+
+#### Step 2: Create Serializer
+
+In `products/serializers.py`:
+```python
+from rest_framework import serializers
+from .models import Product
+
+class ProductSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Product
+        fields = '__all__'
+```
+
+#### Step 3: Create API View
+
+In `products/views.py`:
+```python
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from .serializers import ProductSerializer
+
+@api_view(['GET'])
+def product_list_api(request):
+    cache_key = 'product_list_api'
+    cached_data = cache.get(cache_key)
+    
+    if cached_data is None:
+        products = Product.objects.all()
+        serializer = ProductSerializer(products, many=True)
+        cache.set(cache_key, serializer.data, 60 * 5)  # Cache for 5 minutes
+        return Response(serializer.data)
+    
+    return Response(cached_data)
+```
+
+#### Step 4: Add API URL
+
+In `urls.py`:
+```python
+path('api/products/', product_list_api),
+```
+
+#### Step 5: Test the API
+
+1. Visit http://localhost:8000/api/products/
+2. Note response time on first request
+3. Refresh to see cached response
+
+### Monitoring Django Cache
+
+Install django-debug-toolbar:
+```bash
+pip install django-debug-toolbar
+```
+
+Add to `settings.py`:
+```python
+INSTALLED_APPS = [
+    ...,
+    'debug_toolbar',
+]
+
+MIDDLEWARE = [
+    ...,
+    'debug_toolbar.middleware.DebugToolbarMiddleware',
+]
+
+INTERNAL_IPS = ['127.0.0.1']
+```
+
+Add to `urls.py`:
+```python
+from django.urls import include, path
+
+urlpatterns = [
+    ...,
+    path('__debug__/', include('debug_toolbar.urls')),
+]
+```
+
+Now you can see cache operations in the debug toolbar when running in development.
+
+### Final Django Exercise: Comprehensive Caching Strategy
+
+**Objective**: Implement multiple caching strategies in a single view.
+
+1. Create a new view that combines:
+   - View-level caching
+   - Template fragment caching
+   - Low-level caching of expensive computations
+
+```python
+from django.views.decorators.cache import cache_page, never_cache
+
+@cache_page(60 * 2)  # Cache entire view for 2 minutes
+def product_dashboard(request):
+    # Cache expensive calculation
+    cache_key = 'product_stats'
+    stats = cache.get(cache_key)
+    
+    if stats is None:
+        # Calculate expensive stats
+        stats = {
+            'avg_price': Product.objects.aggregate(avg=models.Avg('price'))['avg__avg'],
+            'total_products': Product.objects.count(),
+            # ... other stats
+        }
+        cache.set(cache_key, stats, 60 * 10)  # Cache for 10 minutes
+    
+    context = {
+        'stats': stats,
+        'products': Product.objects.all()[:10],
+    }
+    return render(request, 'products/dashboard.html', context)
+```
+
+2. Create a template that uses fragment caching for different sections:
+```html
+{% load cache %}
+
+<h1>Product Dashboard</h1>
+
+{% cache 300 stats_section %}
+<div class="stats">
+    <h2>Statistics</h2>
+    <p>Average Price: ${{ stats.avg_price|floatformat:2 }}</p>
+    <p>Total Products: {{ stats.total_products }}</p>
+</div>
+{% endcache %}
+
+{% cache 60 recent_products %}
+<div class="recent-products">
+    <h2>Recent Products</h2>
+    <ul>
+        {% for product in products %}
+        <li>{{ product.name }} - ${{ product.price }}</li>
+        {% endfor %}
+    </ul>
+</div>
+{% endcache %}
+```
+
+3. Implement cache invalidation when products change:
+```python
+@receiver(post_save, sender=Product)
+def invalidate_dashboard_cache(sender, instance, **kwargs):
+    # Invalidate view cache
+    from django.utils.cache import get_cache_key
+    from django.core.cache import caches
+    
+    # Invalidate stats cache
+    cache.delete('product_stats')
+    
+    # Invalidate template fragments
+    caches['default'].delete_many(['stats_section', 'recent_products'])
 ```
 
 ### Cache Optimization Techniques
