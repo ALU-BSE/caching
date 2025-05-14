@@ -1,6 +1,4 @@
-# Guided Learning Activity - Caching
-
-# Complete Guide to Caching in Web Applications with Python
+# Guided Learning Activity - Caching in Web Applications with Python
 
 ## Introduction
 
