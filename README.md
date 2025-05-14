@@ -900,4 +900,22 @@ Create the corresponding templates:
 ```
 
 2. Open your browser's developer tools (F12 in most browsers).
-3. Navigate to the Network tab and check the
+3. Navigate to the Network tab and check the "Disable cache" option in your browser's developer tools if available, to see the full requests initially.
+4. Visit the /static-content page.
+* First visit: Observe the HTTP response headers. You should see Cache-Control: public, max-age=3600 and an Expires header. Note the status code (should be 200).
+* Refresh the page: Observe the request again. Many browsers will show "200 OK (from disk cache)" or similar, indicating the resource was served from the browser's cache without making a new network request. The request details might show that no actual network request was made to the server for the main HTML document.
+5. Visit the /dynamic-content page.
+* First visit: Observe the response headers. You should see Cache-Control: no-cache, must-revalidate and a Last-Modified header. Note the status code (200).
+* Refresh the page: The browser should make a request back to the server. The server will respond with new content and a 200 status code. The timestamp in the content should update.
+6. Visit the /conditional-content page.
+* First visit: Observe the response headers. You should see an ETag header (e.g., ETag: "v1-...") and Cache-Control: public, max-age=300. Note the status code (200).
+* Refresh the page (within 5 minutes):
+* Observe the request headers sent by your browser. It should now include an If-None-Match header with the ETag value from the first response.
+* Observe the server's response. It should be a 304 Not Modified status code with an empty body. This tells the browser it can use its cached version.
+* Wait for more than 5 minutes (or manually clear the ETag/cache for that specific URL if your browser tools allow) and refresh again. The server should now send a full 200 response with the content because the max-age has expired, forcing a revalidation that might result in new content (though in our simple example, the content is static, so it will be the same, but the ETag mechanism is still demonstrated).
+
+Observations & Questions for You:
+
+What differences did you notice in the "Size" or "Transferred" column in the Network tab for cached vs. non-cached responses?
+How does the ETag and If-None-Match header combination help save bandwidth?
+Why is Cache-Control: no-cache different from not setting any caching headers at all? (Hint: no-cache still often involves a server check).
