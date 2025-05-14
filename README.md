@@ -1959,79 +1959,1095 @@ urlpatterns = [
 
 Now you can see cache operations in the debug toolbar when running in development.
 
-### Final Django Exercise: Comprehensive Caching Strategy
 
-**Objective**: Implement multiple caching strategies in a single view.
 
-1. Create a new view that combines:
-   - View-level caching
-   - Template fragment caching
-   - Low-level caching of expensive computations
+Here's the continuation of your guided learning activity on caching in web applications with Python, maintaining the same structure, tone, and exercise logic:
 
-```python
-from django.views.decorators.cache import cache_page, never_cache
+---
 
-@cache_page(60 * 2)  # Cache entire view for 2 minutes
-def product_dashboard(request):
-    # Cache expensive calculation
-    cache_key = 'product_stats'
-    stats = cache.get(cache_key)
-    
-    if stats is None:
-        # Calculate expensive stats
-        stats = {
-            'avg_price': Product.objects.aggregate(avg=models.Avg('price'))['avg__avg'],
-            'total_products': Product.objects.count(),
-            # ... other stats
-        }
-        cache.set(cache_key, stats, 60 * 10)  # Cache for 10 minutes
-    
-    context = {
-        'stats': stats,
-        'products': Product.objects.all()[:10],
-    }
-    return render(request, 'products/dashboard.html', context)
+## Implementing Redis for Distributed Caching
+
+### Why Redis for Caching?
+
+Redis (Remote Dictionary Server) is an in-memory data structure store that excels as a distributed cache due to:
+- **High performance**: In-memory operations with sub-millisecond latency
+- **Persistence options**: Can optionally persist data to disk
+- **Rich data structures**: Supports strings, hashes, lists, sets, and more
+- **Atomic operations**: Guarantees thread-safe operations
+- **Pub/Sub capabilities**: Enables real-time messaging patterns
+- **Cluster support**: Horizontal scaling across multiple nodes
+
+### Setting Up Redis
+
+1. Install Redis on your system:
+   - **Linux**: `sudo apt-get install redis-server`
+   - **MacOS**: `brew install redis`
+   - **Windows**: Use the Windows Subsystem for Linux or a Docker container
+
+2. Verify Redis is running:
+```bash
+redis-cli ping
+# Should respond with "PONG"
 ```
 
-2. Create a template that uses fragment caching for different sections:
+3. Install Python Redis client:
+```bash
+pip install redis
+```
+
+### Basic Redis Caching Example
+
+```python
+import redis
+import json
+import time
+
+# Connect to Redis
+cache = redis.Redis(host='localhost', port=6379, db=0)
+
+def get_data_with_redis(key, ttl=60, fallback_function=None):
+    """
+    Try to get data from Redis cache, falling back to a function if not found
+    
+    Args:
+        key: Cache key
+        ttl: Time-to-live in seconds
+        fallback_function: Function to call if cache miss occurs
+    """
+    # Try to get cached data
+    cached_data = cache.get(key)
+    
+    if cached_data is not None:
+        print("Cache hit!")
+        return json.loads(cached_data)
+    
+    print("Cache miss!")
+    if fallback_function is None:
+        return None
+    
+    # Get data from fallback function
+    fresh_data = fallback_function()
+    
+    # Store in Redis
+    cache.setex(key, ttl, json.dumps(fresh_data))
+    
+    return fresh_data
+
+# Example usage
+def fetch_expensive_data():
+    """Simulate an expensive operation"""
+    time.sleep(2)
+    return {"data": "This took a long time to compute", "timestamp": time.time()}
+
+# First call - will be slow (cache miss)
+result = get_data_with_redis("expensive_data", 30, fetch_expensive_data)
+print(result)
+
+# Second call - will be fast (cache hit)
+result = get_data_with_redis("expensive_data", 30, fetch_expensive_data)
+print(result)
+```
+
+### Exercise 7: Implementing Redis Caching in Flask
+
+**Objective**: Modify our Flask application to use Redis for caching product data.
+
+1. Update `app/app.py` to initialize Redis:
+
+```python
+from redis import Redis
+
+# Add to your Flask app configuration
+app.config['REDIS_URL'] = 'redis://localhost:6379/0'
+redis_client = Redis.from_url(app.config['REDIS_URL'])
+
+# Make redis_client available to other modules
+app.extensions['redis'] = redis_client
+```
+
+2. Create a new Redis caching module:
+
+```python
+# app/utils/redis_cache.py
+import json
+import time
+from functools import wraps
+from flask import current_app
+
+def redis_cache(key_prefix, ttl=60):
+    """
+    Decorator to cache function results in Redis
+    
+    Args:
+        key_prefix: Prefix for cache keys
+        ttl: Time-to-live in seconds
+    """
+    def decorator(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            # Generate cache key
+            cache_key = f"{key_prefix}:{str(args)}:{str(kwargs)}"
+            
+            # Try to get cached data
+            redis_client = current_app.extensions['redis']
+            cached_data = redis_client.get(cache_key)
+            
+            if cached_data is not None:
+                return json.loads(cached_data)
+            
+            # Cache miss - call original function
+            result = f(*args, **kwargs)
+            
+            # Store in Redis
+            redis_client.setex(cache_key, ttl, json.dumps(result))
+            
+            return result
+        return wrapper
+    return decorator
+```
+
+3. Update the products model to use Redis:
+
+```python
+# app/models/products.py
+from app.utils.redis_cache import redis_cache
+
+@redis_cache('products_list', ttl=30)
+def get_products_redis(page=1, per_page=10):
+    """Get paginated products with Redis caching"""
+    with get_db_connection() as conn:
+        offset = (page - 1) * per_page
+        query = '''
+            SELECT id, name, price 
+            FROM products 
+            ORDER BY id 
+            LIMIT ? OFFSET ?
+        '''
+        rows = conn.execute(query, (per_page, offset)).fetchall()
+        products = [dict(row) for row in rows]
+        total = conn.execute('SELECT COUNT(*) FROM products').fetchone()[0]
+    
+    return {
+        'products': products,
+        'pagination': {
+            'page': page,
+            'per_page': per_page,
+            'total': total,
+            'pages': (total + per_page - 1) // per_page
+        }
+    }
+```
+
+4. Add a new route to compare caching methods:
+
+```python
+@app.route('/products/compare')
+def compare_caching():
+    page = int(request.args.get('page', 1))
+    
+    # Time Redis caching
+    start = time.time()
+    redis_result = get_products_redis(page)
+    redis_time = time.time() - start
+    
+    # Time simple in-memory caching
+    start = time.time()
+    memory_result = get_products(page, per_page=10, use_cache=True)
+    memory_time = time.time() - start
+    
+    # Time uncached
+    start = time.time()
+    uncached_result = get_products(page, per_page=10, use_cache=False)
+    uncached_time = time.time() - start
+    
+    return render_template('compare_caching.html',
+                         redis_time=redis_time,
+                         memory_time=memory_time,
+                         uncached_time=uncached_time,
+                         page=page)
+```
+
+5. Create a comparison template:
+
+```html
+<!-- app/templates/compare_caching.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Caching Comparison</title>
+    <style>
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .fastest { background-color: #e6ffe6; }
+    </style>
+</head>
+<body>
+    <h1>Caching Method Comparison</h1>
+    
+    <table>
+        <tr>
+            <th>Method</th>
+            <th>Time (seconds)</th>
+            <th>Notes</th>
+        </tr>
+        <tr class="{{ 'fastest' if redis_time == min([redis_time, memory_time, uncached_time]) }}">
+            <td>Redis Caching</td>
+            <td>{{ "%.4f"|format(redis_time) }}</td>
+            <td>Distributed, survives app restarts</td>
+        </tr>
+        <tr class="{{ 'fastest' if memory_time == min([redis_time, memory_time, uncached_time]) }}">
+            <td>In-Memory Caching</td>
+            <td>{{ "%.4f"|format(memory_time) }}</td>
+            <td>Simple but app-specific, doesn't scale</td>
+        </tr>
+        <tr class="{{ 'fastest' if uncached_time == min([redis_time, memory_time, uncached_time]) }}">
+            <td>No Caching</td>
+            <td>{{ "%.4f"|format(uncached_time) }}</td>
+            <td>Always fresh data but slow</td>
+        </tr>
+    </table>
+    
+    <p>Page: {{ page }}</p>
+    <p>
+        <a href="?page={{ page + 1 }}">Next Page</a>
+        {% if page > 1 %}
+            | <a href="?page={{ page - 1 }}">Previous Page</a>
+        {% endif %}
+    </p>
+    
+    <p><a href="/products">Back to Products</a></p>
+</body>
+</html>
+```
+
+### Advanced Redis Patterns
+
+#### Cache Stampede Protection
+
+```python
+def get_with_stampede_protection(key, ttl, fallback_function, lock_timeout=5):
+    """
+    Get data with protection against cache stampede (dog-piling effect)
+    """
+    # Try to get cached data
+    cached_data = cache.get(key)
+    if cached_data is not None:
+        return json.loads(cached_data)
+    
+    # Try to acquire lock
+    lock_key = f"{key}:lock"
+    if cache.setnx(lock_key, "locked"):
+        # Set lock expiration
+        cache.expire(lock_key, lock_timeout)
+        
+        try:
+            # Generate fresh data
+            fresh_data = fallback_function()
+            cache.setex(key, ttl, json.dumps(fresh_data))
+            return fresh_data
+        finally:
+            # Release lock
+            cache.delete(lock_key)
+    else:
+        # Wait for lock to release
+        time.sleep(0.1)
+        return get_with_stampede_protection(key, ttl, fallback_function, lock_timeout)
+```
+
+#### Redis Pipeline for Batch Operations
+
+```python
+def get_multiple_products(product_ids):
+    """Get multiple products efficiently using Redis pipeline"""
+    pipeline = cache.pipeline()
+    
+    # Queue up all the GET commands
+    for product_id in product_ids:
+        pipeline.get(f"product_{product_id}")
+    
+    # Execute all commands in one network roundtrip
+    cached_results = pipeline.execute()
+    
+    results = []
+    for product_id, cached_data in zip(product_ids, cached_results):
+        if cached_data is not None:
+            results.append(json.loads(cached_data))
+        else:
+            # Fallback to database for cache misses
+            product = get_product_from_db(product_id)
+            if product:
+                # Cache for future requests
+                cache.setex(f"product_{product_id}", 60, json.dumps(product)))
+                results.append(product)
+    
+    return results
+```
+
+## Cache Invalidation Strategies
+
+### Common Cache Invalidation Patterns
+
+1. **Time-based Expiration (TTL)**
+   - Simple to implement
+   - Good for data that can be slightly stale
+   - Example: `cache.setex(key, 60, value)  # Expires in 60 seconds`
+
+2. **Explicit Invalidation**
+   - Delete cache entries when data changes
+   - Ensures fresh data but more complex
+   - Example: `cache.delete("user:42")`
+
+3. **Write-through Caching**
+   - Update cache immediately when data changes
+   - Maintains consistency but slower writes
+
+4. **Cache Tags**
+   - Group related cache entries
+   - Invalidate entire groups when needed
+   - Example: Invalidate all "product_*" entries when inventory changes
+
+### Implementing Cache Invalidation
+
+```python
+# app/models/products.py
+def update_product(product_id, name=None, price=None, description=None):
+    """Update product and invalidate cache"""
+    with get_db_connection() as conn:
+        # Update database
+        updates = []
+        params = []
+        
+        if name is not None:
+            updates.append("name = ?")
+            params.append(name)
+        if price is not None:
+            updates.append("price = ?")
+            params.append(price)
+        if description is not None:
+            updates.append("description = ?")
+            params.append(description)
+        
+        if not updates:
+            return False
+        
+        query = f"UPDATE products SET {', '.join(updates)} WHERE id = ?"
+        params.append(product_id)
+        conn.execute(query, params)
+        conn.commit()
+    
+    # Invalidate cache
+    redis_client = current_app.extensions['redis']
+    
+    # Delete specific product cache
+    redis_client.delete(f"product_{product_id}")
+    
+    # Delete all product list caches (using a pattern)
+    keys = redis_client.keys("products_list:*")
+    if keys:
+        redis_client.delete(*keys)
+    
+    return True
+```
+
+### Exercise 8: Implementing Cache Invalidation
+
+**Objective**: Create a product update form with proper cache invalidation.
+
+1. Add an update form route to `app/app.py`:
+
+```python
+@app.route('/products/<int:product_id>/edit', methods=['GET', 'POST'])
+def edit_product(product_id):
+    if request.method == 'POST':
+        name = request.form.get('name')
+        price = float(request.form.get('price'))
+        description = request.form.get('description')
+        
+        if update_product(product_id, name=name, price=price, description=description):
+            flash('Product updated successfully!', 'success')
+            return redirect(url_for('product_detail', product_id=product_id))
+        else:
+            flash('Failed to update product', 'error')
+    
+    product = get_product_by_id(product_id, use_cache=False)['product']
+    return render_template('edit_product.html', product=product)
+```
+
+2. Create an edit product template:
+
+```html
+<!-- app/templates/edit_product.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Edit Product</title>
+</head>
+<body>
+    <h1>Edit Product</h1>
+    
+    <form method="POST">
+        <p>
+            <label>Name:</label>
+            <input type="text" name="name" value="{{ product.name }}" required>
+        </p>
+        <p>
+            <label>Price:</label>
+            <input type="number" step="0.01" name="price" value="{{ product.price }}" required>
+        </p>
+        <p>
+            <label>Description:</label>
+            <textarea name="description">{{ product.description }}</textarea>
+        </p>
+        <button type="submit">Update Product</button>
+    </form>
+    
+    <p><a href="/products/{{ product.id }}">Cancel</a></p>
+</body>
+</html>
+```
+
+3. Add a link to the edit page in the product detail template:
+
+```html
+<!-- Add to app/templates/product_detail.html -->
+<p><a href="/products/{{ product.id }}/edit">Edit Product</a></p>
+```
+
+4. Test the implementation:
+   - View a product page (notice the cache)
+   - Edit the product
+   - Verify the changes appear immediately (cache was invalidated)
+   - Check the product list to ensure it updates on subsequent views
+
+## Caching in Flask Applications
+
+### Flask-Caching Extension
+
+Flask-Caching provides a simple interface for adding caching to Flask applications.
+
+1. Configure Flask-Caching:
+
+```python
+# app/app.py
+from flask_caching import Cache
+
+# Configure caching
+cache_config = {
+    "CACHE_TYPE": "RedisCache",
+    "CACHE_REDIS_URL": "redis://localhost:6379/0",
+    "CACHE_DEFAULT_TIMEOUT": 300
+}
+cache = Cache(app, config=cache_config)
+```
+
+2. Basic view caching:
+
+```python
+@app.route('/expensive-view')
+@cache.cached(timeout=60)
+def expensive_view():
+    time.sleep(3)  # Simulate expensive operation
+    return "This view took a long time to generate at: " + str(time.time())
+```
+
+3. Memoization for functions:
+
+```python
+@cache.memoize(timeout=60)
+def expensive_function(param1, param2):
+    time.sleep(2)
+    return f"Result for {param1} and {param2} at {time.time()}"
+```
+
+4. Template fragment caching:
+
+```html
+<!-- In your template -->
+{% cache 60, "fragment-name" %}
+<div>
+    This content will be cached for 60 seconds
+    Current time: {{ time.time() }}
+</div>
+{% endcache %}
+```
+
+### Exercise 9: Optimizing a Flask API with Caching
+
+**Objective**: Implement caching in a Flask API endpoint.
+
+1. Create a new API endpoint in `app/app.py`:
+
+```python
+@app.route('/api/weather')
+@cache.cached(timeout=60, query_string=True)
+def weather_api():
+    # Simulate API call to external weather service
+    time.sleep(1)
+    
+    # In a real app, this would call an actual weather API
+    return jsonify({
+        "temperature": 72 + (time.time() % 10) - 5,  # Random-ish value
+        "conditions": ["sunny", "cloudy", "rainy"][int(time.time() % 3)],
+        "timestamp": time.time(),
+        "source": "cache" if request.args.get('cached') else "live"
+    })
+```
+
+2. Create a weather display page:
+
+```python
+@app.route('/weather')
+def weather_demo():
+    return render_template('weather.html')
+```
+
+3. Create the weather template:
+
+```html
+<!-- app/templates/weather.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Weather Caching Demo</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .container { max-width: 800px; margin: 0 auto; }
+        .chart-container { position: relative; height: 300px; }
+        .controls { margin: 20px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Weather API Caching Demo</h1>
+        
+        <div class="controls">
+            <button onclick="fetchWeather(false)">Fetch Fresh Data</button>
+            <button onclick="fetchWeather(true)">Use Cached Data</button>
+        </div>
+        
+        <div class="chart-container">
+            <canvas id="weatherChart"></canvas>
+        </div>
+        
+        <div id="response"></div>
+    </div>
+    
+    <script>
+        const chartCtx = document.getElementById('weatherChart').getContext('2d');
+        const weatherChart = new Chart(chartCtx, {
+            type: 'line',
+            data: { labels: [], datasets: [
+                { label: 'Temperature', data: [], borderColor: 'red' },
+                { label: 'Response Time', data: [], borderColor: 'blue' }
+            ]},
+            options: { responsive: true, scales: { y: { beginAtZero: false } } }
+        });
+        
+        let requestCount = 0;
+        
+        function fetchWeather(useCache) {
+            const startTime = performance.now();
+            const url = `/api/weather?cached=${useCache}`;
+            
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    const responseTime = performance.now() - startTime;
+                    
+                    // Update chart
+                    requestCount++;
+                    weatherChart.data.labels.push(requestCount);
+                    weatherChart.data.datasets[0].data.push(data.temperature);
+                    weatherChart.data.datasets[1].data.push(responseTime);
+                    weatherChart.update();
+                    
+                    // Display response
+                    document.getElementById('response').innerHTML = `
+                        <pre>${JSON.stringify(data, null, 2)}</pre>
+                        <p>Response time: ${responseTime.toFixed(2)}ms</p>
+                        <p>Source: ${data.source}</p>
+                    `;
+                });
+        }
+        
+        // Initial load
+        fetchWeather(true);
+    </script>
+</body>
+</html>
+```
+
+## Caching in Django Applications
+
+### Django's Cache Framework
+
+Django provides a robust caching framework with multiple backends:
+
+1. Configure caching in `settings.py`:
+
+```python
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+        'LOCATION': 'redis://localhost:6379/0',
+        'OPTIONS': {
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+        }
+    }
+}
+```
+
+2. Per-view caching:
+
+```python
+from django.views.decorators.cache import cache_page
+
+@cache_page(60 * 15)  # Cache for 15 minutes
+def my_view(request):
+    # Your view logic
+```
+
+3. Template fragment caching:
+
 ```html
 {% load cache %}
-
-<h1>Product Dashboard</h1>
-
-{% cache 300 stats_section %}
-<div class="stats">
-    <h2>Statistics</h2>
-    <p>Average Price: ${{ stats.avg_price|floatformat:2 }}</p>
-    <p>Total Products: {{ stats.total_products }}</p>
-</div>
-{% endcache %}
-
-{% cache 60 recent_products %}
-<div class="recent-products">
-    <h2>Recent Products</h2>
-    <ul>
-        {% for product in products %}
-        <li>{{ product.name }} - ${{ product.price }}</li>
-        {% endfor %}
-    </ul>
-</div>
+{% cache 500 sidebar %}
+    <!-- Sidebar content -->
 {% endcache %}
 ```
 
-3. Implement cache invalidation when products change:
+4. Low-level cache API:
+
 ```python
+from django.core.cache import cache
+
+# Set cache
+cache.set('my_key', 'my_value', timeout=3600)
+
+# Get cache
+value = cache.get('my_key')
+```
+
+### Exercise 10: Implementing Caching in Django
+
+**Objective**: Create a cached Django view for product listings.
+
+1. Create a Django view with caching:
+
+```python
+# products/views.py
+from django.shortcuts import render
+from django.views.decorators.cache import cache_page
+from .models import Product
+import time
+
+@cache_page(60 * 5)  # Cache for 5 minutes
+def product_list(request):
+    start_time = time.time()
+    
+    # Simulate complex queryset
+    products = list(Product.objects.all().order_by('name')[:100])
+    
+    context = {
+        'products': products,
+        'execution_time': time.time() - start_time,
+        'source': 'cache' if getattr(request, '_cache_update_cache', False) else 'database'
+    }
+    
+    return render(request, 'products/list.html', context)
+```
+
+2. Create a template to display the results:
+
+```html
+<!-- templates/products/list.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Product List</title>
+</head>
+<body>
+    <h1>Product List</h1>
+    <p>Generated in {{ execution_time|floatformat:4 }} seconds (Source: {{ source }})</p>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Price</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for product in products %}
+            <tr>
+                <td>{{ product.name }}</td>
+                <td>${{ product.price|floatformat:2 }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    
+    <p><a href="?refresh=1">Force Refresh</a></p>
+</body>
+</html>
+```
+
+3. Implement cache invalidation on product save:
+
+```python
+# products/models.py
+from django.db import models
+from django.core.cache import cache
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+
+class Product(models.Model):
+    name = models.CharField(max_length=100)
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+    description = models.TextField(blank=True)
+    
+    def __str__(self):
+        return self.name
+
 @receiver(post_save, sender=Product)
-def invalidate_dashboard_cache(sender, instance, **kwargs):
-    # Invalidate view cache
-    from django.utils.cache import get_cache_key
-    from django.core.cache import caches
+def clear_product_cache(sender, instance, **kwargs):
+    """Clear cache when a product is saved"""
+    cache.delete_pattern('*.views.product_list*')  # Requires django-redis
+```
+
+## Monitoring and Optimizing Your Cache
+
+### Key Metrics to Monitor
+
+1. **Cache Hit Rate**: Percentage of requests served from cache
+2. **Memory Usage**: How much of your cache storage is being used
+3. **Eviction Rate**: How often items are being removed due to space constraints
+4. **Latency**: Time taken for cache operations
+5. **Error Rate**: Failed cache operations
+
+### Redis Monitoring Commands
+
+```bash
+# Check Redis memory usage
+redis-cli info memory
+
+# Get cache statistics
+redis-cli info stats
+
+# Monitor Redis commands in real-time
+redis-cli monitor
+
+# Check keyspace information
+redis-cli info keyspace
+```
+
+### Exercise 11: Analyzing Cache Performance
+
+**Objective**: Create a dashboard to monitor cache performance.
+
+1. Create a monitoring route in `app/app.py`:
+
+```python
+@app.route('/cache-stats')
+def cache_stats():
+    redis_info = redis_client.info()
     
-    # Invalidate stats cache
-    cache.delete('product_stats')
+    stats = {
+        'memory': {
+            'used': redis_info['used_memory_human'],
+            'peak': redis_info['used_memory_peak_human'],
+            'fragmentation': redis_info['mem_fragmentation_ratio']
+        },
+        'keys': {
+            'total': redis_info['db0']['keys'] if 'db0' in redis_info else 0,
+            'expires': redis_info['db0']['expires'] if 'db0' in redis_info else 0
+        },
+        'hit_rate': {
+            'hits': redis_info['keyspace_hits'],
+            'misses': redis_info['keyspace_misses'],
+            'rate': redis_info['keyspace_hits'] / (redis_info['keyspace_hits'] + redis_info['keyspace_misses']) 
+                     if (redis_info['keyspace_hits'] + redis_info['keyspace_misses']) > 0 else 0
+        },
+        'throughput': {
+            'ops_per_sec': redis_info['instantaneous_ops_per_sec']
+        }
+    }
     
-    # Invalidate template fragments
-    caches['default'].delete_many(['stats_section', 'recent_products'])
+    return render_template('cache_stats.html', stats=stats)
+```
+
+2. Create a monitoring template:
+
+```html
+<!-- app/templates/cache_stats.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Cache Statistics</title>
+    <style>
+        .stat-card { border: 1px solid #ddd; padding: 15px; margin: 10px; border-radius: 5px; }
+        .stat-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+        .good { color: green; }
+        .warning { color: orange; }
+        .bad { color: red; }
+    </style>
+</head>
+<body>
+    <h1>Cache Statistics</h1>
+    
+    <div class="stat-grid">
+        <div class="stat-card">
+            <h2>Memory Usage</h2>
+            <p>Used: {{ stats.memory.used }}</p>
+            <p>Peak: {{ stats.memory.peak }}</p>
+            <p>Fragmentation: 
+                <span class="{% if stats.memory.fragmentation < 1.1 %}good{% elif stats.memory.fragmentation < 1.5 %}warning{% else %}bad{% endif %}">
+                    {{ "%.2f"|format(stats.memory.fragmentation) }}
+                </span>
+            </p>
+        </div>
+        
+        <div class="stat-card">
+            <h2>Keys</h2>
+            <p>Total: {{ stats.keys.total }}</p>
+            <p>With TTL: {{ stats.keys.expires }}</p>
+        </div>
+        
+        <div class="stat-card">
+            <h2>Hit Rate</h2>
+            <p>Hits: {{ stats.hit_rate.hits }}</p>
+            <p>Misses: {{ stats.hit_rate.misses }}</p>
+            <p>Rate: 
+                <span class="{% if stats.hit_rate.rate > 0.8 %}good{% elif stats.hit_rate.rate > 0.5 %}warning{% else %}bad{% endif %}">
+                    {{ "%.2f%%"|format(stats.hit_rate.rate * 100) }}
+                </span>
+            </p>
+        </div>
+        
+        <div class="stat-card">
+            <h2>Throughput</h2>
+            <p>Operations/sec: {{ stats.throughput.ops_per_sec }}</p>
+        </div>
+    </div>
+    
+    <p><a href="/">Back to Home</a></p>
+    
+    <script>
+        // Auto-refresh every 5 seconds
+        setTimeout(() => { window.location.reload(); }, 5000);
+    </script>
+</body>
+</html>
+```
+
+### Cache Optimization Techniques
+
+1. **Right-sizing your cache**:
+   - Monitor memory usage and adjust maxmemory policy
+   - Set appropriate TTL values based on data volatility
+
+2. **Key design**:
+   - Use consistent naming conventions
+   - Avoid overly long keys
+   - Consider namespacing (e.g., `user:42:profile`)
+
+3. **Data serialization**:
+   - Choose efficient serialization formats (MessagePack, Protocol Buffers)
+   - Compress large values
+
+4. **Eviction policies**:
+   - Choose appropriate policy (volatile-lru, allkeys-lru, etc.)
+   - Monitor eviction rates
+
+## Final Challenge: Building a Cached API
+
+**Objective**: Implement a complete API with multiple caching strategies.
+
+1. Create an API endpoint that:
+   - Accepts query parameters for filtering
+   - Implements Redis caching
+   - Supports cache invalidation on data changes
+   - Includes proper HTTP caching headers
+
+```python
+@app.route('/api/v2/products')
+def api_v2_products():
+    # Get query parameters
+    page = int(request.args.get('page', 1))
+    per_page = min(int(request.args.get('per_page', 10)), 100)
+    category = request.args.get('category')
+    
+    # Generate cache key based on all parameters
+    cache_key = f"api_v2_products:page:{page}:per_page:{per_page}"
+    if category:
+        cache_key += f":category:{category}"
+    
+    # Try to get from cache
+    cached_data = redis_client.get(cache_key)
+    if cached_data:
+        response = make_response(cached_data)
+        response.headers['X-Cache'] = 'HIT'
+        return response
+    
+    # Build query
+    query = Product.query
+    if category:
+        query = query.filter_by(category=category)
+    
+    # Paginate
+    products = query.paginate(page=page, per_page=per_page)
+    
+    # Prepare response data
+    data = {
+        'items': [product.to_dict() for product in products.items],
+        'meta': {
+            'page': page,
+            'per_page': per_page,
+            'total': products.total,
+            'pages': products.pages
+        }
+    }
+    
+    # Serialize and cache
+    response_data = json.dumps(data)
+    redis_client.setex(cache_key, 60, response_data)  # Cache for 60 seconds
+    
+    # Set HTTP caching headers
+    response = make_response(response_data)
+    response.headers['Content-Type'] = 'application/json'
+    response.headers['Cache-Control'] = 'public, max-age=60'
+    response.headers['X-Cache'] = 'MISS'
+    
+    return response
+```
+
+2. Create a companion web interface that demonstrates:
+   - Cache hit/miss status
+   - Performance metrics
+   - Cache control options
+
+```python
+@app.route('/api-demo')
+def api_demo():
+    return render_template('api_demo.html')
+```
+
+```html
+<!-- app/templates/api_demo.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>API Caching Demo</title>
+    <style>
+        .container { max-width: 800px; margin: 0 auto; }
+        .controls { margin: 20px 0; padding: 10px; background: #f5f5f5; }
+        .response { margin: 20px 0; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .hit { background-color: #e6ffe6; }
+        .miss { background-color: #ffe6e6; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>API Caching Demo</h1>
+        
+        <div class="controls">
+            <label>Page: <input type="number" id="page" value="1" min="1"></label>
+            <label>Per Page: 
+                <select id="per_page">
+                    <option>10</option>
+                    <option>20</option>
+                    <option>50</option>
+                </select>
+            </label>
+            <label>Category: 
+                <select id="category">
+                    <option value="">All</option>
+                    <option>Electronics</option>
+                    <option>Books</option>
+                    <option>Clothing</option>
+                </select>
+            </label>
+            <button onclick="fetchData()">Fetch Data</button>
+            <button onclick="clearCache()">Clear Cache</button>
+        </div>
+        
+        <div class="response">
+            <h3>Response</h3>
+            <div id="response-info"></div>
+            <div id="response-data"></div>
+        </div>
+        
+        <h3>Request History</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Parameters</th>
+                    <th>Cache</th>
+                    <th>Duration</th>
+                </tr>
+            </thead>
+            <tbody id="history"></tbody>
+        </table>
+    </div>
+    
+    <script>
+        let requestCount = 0;
+        
+        function fetchData() {
+            const startTime = performance.now();
+            const page = document.getElementById('page').value;
+            const perPage = document.getElementById('per_page').value;
+            const category = document.getElementById('category').value;
+            
+            let url = `/api/v2/products?page=${page}&per_page=${perPage}`;
+            if (category) url += `&category=${category}`;
+            
+            fetch(url)
+                .then(response => {
+                    const duration = performance.now() - startTime;
+                    const cacheStatus = response.headers.get('X-Cache');
+                    
+                    // Add to history
+                    requestCount++;
+                    const historyRow = document.createElement('tr');
+                    historyRow.className = cacheStatus.toLowerCase();
+                    historyRow.innerHTML = `
+                        <td>${new Date().toLocaleTimeString()}</td>
+                        <td>Page ${page}, ${perPage} items${category ? `, ${category}` : ''}</td>
+                        <td>${cacheStatus}</td>
+                        <td>${duration.toFixed(2)}ms</td>
+                    `;
+                    document.getElementById('history').prepend(historyRow);
+                    
+                    return response.json();
+                })
+                .then(data => {
+                    document.getElementById('response-info').innerHTML = `
+                        <p>Page ${data.meta.page} of ${data.meta.pages} (${data.meta.total} total items)</p>
+                    `;
+                    
+                    document.getElementById('response-data').innerHTML = `
+                        <pre>${JSON.stringify(data.items.slice(0, 5), null, 2)}</pre>
+                        <p>... and ${data.items.length - 5} more items</p>
+                    `;
+                });
+        }
+        
+        function clearCache() {
+            fetch('/clear-cache', { method: 'POST' })
+                .then(() => alert('Cache cleared!'));
+        }
+        
+        // Initial load
+        fetchData();
+    </script>
+</body>
+</html>
 ```
 
 ### Cache Optimization Techniques
