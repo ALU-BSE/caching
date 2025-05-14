@@ -58,8 +58,8 @@ Caching is the process of storing copies of data in a temporary storage location
 
 1. Clone this sample Flask blog application:
 ```bash
-git clone https://github.com/yourusername/sample-flask-blog
-cd sample-flask-blog
+git clone https://github.com/iPelino/afretec_event_locator_api
+cd afretec_event_locator_api
 pip install -r requirements.txt
 ```
 
